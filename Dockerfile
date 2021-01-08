@@ -41,8 +41,9 @@ COPY start-build /bin/
 # Set environment variables.
 ENV USER_ID=1000 \
     GROUP_ID=1000 \
-    PKG_SIGNING_KEY_NAME=ssh.rsa \
-    PKG_SIGNING_KEY= \
+    PKG_SIGNING_KEY_NAME=ssh \
+    PKG_SIGNING_PRIV_KEY= \
+    PKG_SIGNING_PUB_KEY= \
     PKG_SRC_DIR=/pkg_src \
     PKG_DST_DIR=/pkg_dst
 

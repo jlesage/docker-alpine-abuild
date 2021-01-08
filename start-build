@@ -8,19 +8,30 @@ die() {
     exit 1
 }
 
-PKG_SIGNING_KEY="${PKG_SIGNING_KEY:-UNSET}"
+PKG_SIGNING_PRIV_KEY="${PKG_SIGNING_PRIV_KEY:-UNSET}"
+PKG_SIGNING_PUB_KEY="${PKG_SIGNING_PUB_KEY:-UNSET}"
 
-if [ ! -d "$PKG_SRC_DIR" ]; then
-    die "ERROR: Package source directory '$PKG_SRC_DIR' not found."
-elif [ ! -d "$PKG_DST_DIR" ]; then
-    die "ERROR: Package destination directory '$PKG_DST_DIR' not found."
+if [ "$PKG_SIGNING_PRIV_KEY" != "UNSET" ] && [ "$PKG_SIGNING_PUB_KEY" = "UNSET" ]; then
+    die "Package signing private key provided but not the public one."
+elif [ "$PKG_SIGNING_PRIV_KEY" = "UNSET" ] && [ "$PKG_SIGNING_PUB_KEY" != "UNSET" ]; then
+    die "Package signing public key provided but not the private one."
+fi
+
+echo "$PKG_SRC_DIR" | tr ':' '\n' | while read PKG
+do
+    if [ ! -d "$PKG" ]; then
+        die "Package source directory '$PKG' not found."
+    fi
+done
+if [ ! -d "$PKG_DST_DIR" ]; then
+    die "Package destination directory '$PKG_DST_DIR' not found."
 fi
 
 echo "--------------------------------------------------"
 echo "User ID: $USER_ID"
 echo "Group ID: $USER_ID"
 echo "Package signing key name: $PKG_SIGNING_KEY_NAME"
-if [ "$PKG_SIGNING_KEY" = "UNSET" ]; then
+if [ "$PKG_SIGNING_PRIV_KEY" = "UNSET" ]; then
 echo "Package signing key: Auto-generated"
 else
 echo "Package signing key: Set"
@@ -29,7 +40,7 @@ echo "Package source directory: $PKG_SRC_DIR"
 echo "Package destination directory: $PKG_DST_DIR"
 echo "--------------------------------------------------"
 
-if [ "$PKG_SIGNING_KEY" = "UNSET" ]; then
+if [ "$PKG_SIGNING_PRIV_KEY" = "UNSET" ]; then
     echo "WARNING: Package signing key not provided: you won't be able to validate authenticity of generated package(s)!"
 fi
 
@@ -41,36 +52,49 @@ adduser -G abuild -g "Alpine Package Builder" -s /bin/sh -D -u "$USER_ID" builde
 
 # Install package signing key.
 mkdir /home/builder/.abuild
-if [ "$PKG_SIGNING_KEY" = "UNSET" ]; then
-    echo "/home/builder/.abuild/$PKG_SIGNING_KEY_NAME" | abuild-keygen
+if [ "$PKG_SIGNING_PRIV_KEY" = "UNSET" ]; then
+    echo "/home/builder/.abuild/$PKG_SIGNING_KEY_NAME.rsa" | abuild-keygen
 else
-    echo -e "$PKG_SIGNING_KEY" > "/home/builder/.abuild/$PKG_SIGNING_KEY_NAME"
+    echo -e "$PKG_SIGNING_PRIV_KEY" > "/home/builder/.abuild/$PKG_SIGNING_KEY_NAME.rsa"
+    echo -e "$PKG_SIGNING_PUB_KEY" > "/home/builder/.abuild/$PKG_SIGNING_KEY_NAME.rsa.pub"
 fi
 
 # Adjust permissions.
 chown -R builder:abuild /home/builder/.abuild
 chown -R builder:abuild /var/cache/distfiles
 
+# Add our built packages to the list of repositories.
+sed -i '1 i\/tmp/packages/build' /etc/apk/repositories
+cp /home/builder/.abuild/"$PKG_SIGNING_KEY_NAME".rsa.pub /etc/apk/keys/
+
 # Create work directories.
 su-exec builder:abuild mkdir /tmp/build /tmp/packages
 
-# Copy package source files.
-su-exec builder:abuild cp -r "$PKG_SRC_DIR"/* /tmp/build/
+echo "$PKG_SRC_DIR" | tr ':' '\n' | while read PKG
+do
+    PKG_NAME="$(basename "$PKG")"
 
-# Start build.
-echo "Starting Alpine package build..."
-cd /tmp/build/
-su-exec builder:abuild abuild-apk update
-su-exec builder:abuild \
-    env PACKAGER_PRIVKEY="/home/builder/.abuild/$PKG_SIGNING_KEY_NAME" \
-    REPODEST=/tmp/packages \
-    abuild "$@"
+    # Create build directory.
+    su-exec builder:abuild mkdir /tmp/build/"$PKG_NAME"
 
-echo "Build terminated successfully."
-echo "Generated package(s):"
-find /tmp/packages/tmp -type f -name '*.apk' -exec basename {} ';' | sed 's/^/  /'
+    # Copy package source files.
+    su-exec builder:abuild cp -r "$PKG"/* /tmp/build/"$PKG_NAME"
+
+    # Start build.
+    echo "Starting Alpine package build of $PKG_NAME..."
+    cd /tmp/build/"$PKG_NAME"
+    su-exec builder:abuild abuild-apk update
+    su-exec builder:abuild \
+        env PACKAGER_PRIVKEY="/home/builder/.abuild/$PKG_SIGNING_KEY_NAME.rsa" \
+        REPODEST=/tmp/packages \
+        abuild "$@"
+
+    echo "Build terminated successfully."
+    echo "Generated package(s):"
+    find /tmp/packages/build -type f -name '*.apk' -exec basename {} ';' | sed 's/^/  /'
+done
 
 # Move generated packages to their final destination.
-mv /tmp/packages/tmp/*/*.apk "$PKG_DST_DIR"/
+mv /tmp/packages/build/$(apk --print-arch)/* "$PKG_DST_DIR"/
 
 # vim:ts=4:sw=4:et:sts=4
